@@ -141,19 +141,23 @@ export default function BEPStockMonitor() {
     setLoading(true);
     setError(null);
     try {
-      const listResp = await fetch(`https://api.apify.com/v2/datasets?limit=100&token=${DEFAULT_TOKEN}`);
-      const listData = await listResp.json();
-      const dataset = listData.data?.items?.find(d => d.name === DATASET_NAME);
-      if (!dataset) {
-        setItems([]);
-        setLastFetch(new Date());
-        setLoading(false);
-        return;
+      // Get all runs for this actor, newest first
+      const runsResp = await fetch(`https://api.apify.com/v2/acts/${ACTOR_ID}/runs?limit=20&desc=true&token=${DEFAULT_TOKEN}`);
+      const runsData = await runsResp.json();
+      const runs = runsData.data?.items || [];
+      // Find the most recent successful run with items
+      let allItems = [];
+      for (const run of runs) {
+        if (!run.defaultDatasetId) continue;
+        const itemsResp = await fetch(`https://api.apify.com/v2/datasets/${run.defaultDatasetId}/items?limit=50000&token=${DEFAULT_TOKEN}`);
+        const itemsData = await itemsResp.json();
+        const valid = (Array.isArray(itemsData) ? itemsData : []).filter(i => i && i.sku);
+        if (valid.length > 0) {
+          allItems = valid;
+          break;
+        }
       }
-      const itemsResp = await fetch(`https://api.apify.com/v2/datasets/${dataset.id}/items?limit=50000&token=${DEFAULT_TOKEN}`);
-      const itemsData = await itemsResp.json();
-      const valid = (Array.isArray(itemsData) ? itemsData : []).filter(i => i && i.sku);
-      setItems(valid);
+      setItems(allItems);
       setLastFetch(new Date());
     } catch {
       setError("Failed to load data. Check your connection and try again.");
