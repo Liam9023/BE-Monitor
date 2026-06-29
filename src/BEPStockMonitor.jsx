@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 
-const GITHUB_RAW_URL = "https://raw.githubusercontent.com/Liam9023/BE-Monitor/main/data/bep-stock.json";
+const GITHUB_BASE = "https://raw.githubusercontent.com/Liam9023/BE-Monitor/main/data";
 
 function groupByDate(items) {
   const groups = {};
@@ -93,16 +93,27 @@ export default function BEPStockMonitor() {
     setLoading(true);
     setError(null);
     try {
-      const resp = await fetch(`${GITHUB_RAW_URL}?t=${Date.now()}`);
-      if (!resp.ok) {
+      const t = Date.now();
+      // Fetch index to get available snapshot dates
+      const indexResp = await fetch(`${GITHUB_BASE}/index.json?t=${t}`);
+      if (!indexResp.ok) {
         setItems([]);
         setLastFetch(new Date());
         setLoading(false);
         return;
       }
-      const data = await resp.json();
-      const valid = (Array.isArray(data) ? data : []).filter(i => i && i.sku);
-      setItems(valid);
+      const dates = await indexResp.json();
+      // Fetch up to 7 most recent snapshots
+      const recent = dates.slice(0, 7);
+      const allItems = [];
+      for (const date of recent) {
+        const resp = await fetch(`${GITHUB_BASE}/${date}.json?t=${t}`);
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        const valid = (Array.isArray(data) ? data : []).filter(i => i && i.sku);
+        allItems.push(...valid);
+      }
+      setItems(allItems);
       setLastFetch(new Date());
     } catch {
       setError("Failed to load data. Check your connection and try again.");
