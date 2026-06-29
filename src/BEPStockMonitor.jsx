@@ -1,51 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 
-const DEFAULT_TOKEN = "apify_api_OhVV4r3rp6ye85r3SdIANpww5bJRZZ1bWlaG";
-const DATASET_NAME = "bep-stock-hot-pressure-cleaners";
-const ACTOR_ID = "YrQuEkowkNCLdk4j2";
-
-const SCRAPER_INPUT = {
-  datasetName: DATASET_NAME,
-  excludes: [
-    { glob: "/**/*.{png,jpg,jpeg,pdf,svg,gif,webp}" },
-    { glob: "https://www.bep.kiwi/my-account/**" },
-    { glob: "https://www.bep.kiwi/cart/**" },
-    { glob: "https://www.bep.kiwi/checkout/**" }
-  ],
-  globs: [
-    { glob: "https://www.bep.kiwi/product-category/pressure-cleaners-hot/**" },
-    { glob: "https://www.bep.kiwi/product/**" }
-  ],
-  linkSelector: "a[href]",
-  maxConcurrency: 10,
-  maxCrawlingDepth: 3,
-  maxPagesPerCrawl: 500,
-  pageFunction: `async function pageFunction(context) {
-  const { $, request, log } = context;
-  const url = request.url;
-  if (!url.match(/\\/product\\/[^/]+\\/?$/)) return null;
-  const productName = $('h1').first().text().trim();
-  const bodyText = $('body').text();
-  const skuMatch = bodyText.match(/SKU[\\s\\n]+([^\\n]+)/);
-  const stockMatch = bodyText.match(/Stock Quantity[\\s\\n]+(\\d+)/);
-  const auStockMatch = bodyText.match(/Australia Quantity[\\s\\n]+(\\d+)/);
-  const lastUpdatedMatch = bodyText.match(/Last Updated[\\s\\n]+([^\\n]+)/);
-  const nzStock = stockMatch ? parseInt(stockMatch[1].trim(), 10) : null;
-  const auStock = auStockMatch ? parseInt(auStockMatch[1].trim(), 10) : null;
-  if (nzStock === null && auStock === null) return null;
-  return {
-    url,
-    productName,
-    sku: skuMatch ? skuMatch[1].trim() : '',
-    nzStock,
-    auStock,
-    lastUpdated: lastUpdatedMatch ? lastUpdatedMatch[1].trim() : '',
-    scrapedAt: new Date().toISOString()
-  };
-}`,
-  proxyConfiguration: { useApifyProxy: true },
-  startUrls: [{ url: "https://www.bep.kiwi/product-category/pressure-cleaners-hot/" }]
-};
+const GITHUB_RAW_URL = "https://raw.githubusercontent.com/Liam9023/BE-Monitor/main/data/bep-stock.json";
 
 function groupByDate(items) {
   const groups = {};
@@ -130,9 +85,6 @@ export default function BEPStockMonitor() {
   const [search, setSearch] = useState("");
   const [sortField, setSortField] = useState("productName");
   const [sortDir, setSortDir] = useState("asc");
-  const [scheduleMsg, setScheduleMsg] = useState(null);
-  const [scheduling, setScheduling] = useState(false);
-  const [running, setRunning] = useState(false);
   const [runMsg, setRunMsg] = useState(null);
 
   useEffect(() => { loadData(); }, []);
@@ -141,85 +93,21 @@ export default function BEPStockMonitor() {
     setLoading(true);
     setError(null);
     try {
-      // Get all runs for this actor, newest first
-      const runsResp = await fetch(`https://api.apify.com/v2/acts/${ACTOR_ID}/runs?limit=20&desc=true&token=${DEFAULT_TOKEN}`);
-      const runsData = await runsResp.json();
-      const runs = runsData.data?.items || [];
-      // Find the most recent successful run with items
-      let allItems = [];
-      for (const run of runs) {
-        if (!run.defaultDatasetId) continue;
-        const itemsResp = await fetch(`https://api.apify.com/v2/datasets/${run.defaultDatasetId}/items?limit=50000&token=${DEFAULT_TOKEN}`);
-        const itemsData = await itemsResp.json();
-        const valid = (Array.isArray(itemsData) ? itemsData : []).filter(i => i && i.sku);
-        if (valid.length > 0) {
-          allItems = valid;
-          break;
-        }
+      const resp = await fetch(`${GITHUB_RAW_URL}?t=${Date.now()}`);
+      if (!resp.ok) {
+        setItems([]);
+        setLastFetch(new Date());
+        setLoading(false);
+        return;
       }
-      setItems(allItems);
+      const data = await resp.json();
+      const valid = (Array.isArray(data) ? data : []).filter(i => i && i.sku);
+      setItems(valid);
       setLastFetch(new Date());
     } catch {
       setError("Failed to load data. Check your connection and try again.");
     }
     setLoading(false);
-  };
-
-  const setupSchedule = async () => {
-    setScheduling(true);
-    setScheduleMsg(null);
-    try {
-      const resp = await fetch(`https://api.apify.com/v2/schedules?token=${DEFAULT_TOKEN}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: "bep-stock-daily-8am-nzst",
-          cronExpression: "0 20 * * *",
-          timezone: "UTC",
-          isEnabled: true,
-          isExclusive: true,
-          description: "BEP stock scrape — daily at 8am NZST (8pm UTC)",
-          actions: [{
-            type: "RUN_ACTOR",
-            actorId: ACTOR_ID,
-            runInput: SCRAPER_INPUT,
-            runOptions: { memory: 256, timeoutSecs: 3600 }
-          }]
-        })
-      });
-      const data = await resp.json();
-      if (data.data?.id) {
-        setScheduleMsg({ ok: true, text: "Daily schedule created — scrape will run every day at 8am NZST." });
-      } else if (resp.status === 409 || data.error?.message?.toLowerCase().includes("already")) {
-        setScheduleMsg({ ok: true, text: "Schedule already exists in Apify." });
-      } else {
-        setScheduleMsg({ ok: false, text: data.error?.message || "Failed to create schedule. You may need to set it up manually in Apify Console." });
-      }
-    } catch {
-      setScheduleMsg({ ok: false, text: "Network error. Please try again." });
-    }
-    setScheduling(false);
-  };
-
-  const runNow = async () => {
-    setRunning(true);
-    setRunMsg(null);
-    try {
-      const resp = await fetch(`https://api.apify.com/v2/acts/${ACTOR_ID}/runs?token=${DEFAULT_TOKEN}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(SCRAPER_INPUT)
-      });
-      const data = await resp.json();
-      if (data.data?.id) {
-        setRunMsg({ ok: true, text: "Scrape started. Refresh data in ~15 minutes." });
-      } else {
-        setRunMsg({ ok: false, text: "Failed to start scrape." });
-      }
-    } catch {
-      setRunMsg({ ok: false, text: "Network error." });
-    }
-    setRunning(false);
   };
 
   const snapshots = useMemo(() => groupByDate(items), [items]);
@@ -308,14 +196,10 @@ export default function BEPStockMonitor() {
         </div>
         <div style={s.btnRow}>
           <button style={s.btn} onClick={loadData} disabled={loading}>{loading ? "Loading…" : "↻ Refresh"}</button>
-          <button style={s.btn} onClick={runNow} disabled={running}>{running ? "Starting…" : "▶ Run Now"}</button>
-          <button style={s.btnDark} onClick={setupSchedule} disabled={scheduling}>{scheduling ? "Setting up…" : "⏰ Set Daily Schedule"}</button>
         </div>
       </div>
 
       {/* Messages */}
-      {runMsg && <div style={s.msg(runMsg.ok)}>{runMsg.text}</div>}
-      {scheduleMsg && <div style={s.msg(scheduleMsg.ok)}>{scheduleMsg.text}</div>}
       {error && <div style={s.msg(false)}>{error}</div>}
 
       {/* Stats */}
@@ -352,10 +236,10 @@ export default function BEPStockMonitor() {
         ) : items.length === 0 ? (
           <div style={s.empty}>
             <div style={{ fontSize: 36, marginBottom: 12 }}>⏳</div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "#111", marginBottom: 8 }}>Scrape in progress</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#111", marginBottom: 8 }}>No data yet</div>
             <div style={{ fontSize: 13 }}>
-              The first scrape is running now. Data will appear here once it completes — usually within 15–20 minutes.
-              <br />Click <strong>↻ Refresh</strong> to check for updates.
+              Run the Python scraper locally to populate data.
+              <br />Click <strong>↻ Refresh</strong> after it completes.
             </div>
           </div>
         ) : tab === "current" ? (
@@ -475,3 +359,4 @@ export default function BEPStockMonitor() {
     </div>
   );
 }
+
